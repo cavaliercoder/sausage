@@ -1,9 +1,10 @@
 package main
 
 import (
-	"flag"
 	"fmt"
 	"net/http"
+	"net/url"
+	"os"
 )
 
 var (
@@ -13,20 +14,46 @@ var (
 )
 
 func main() {
-	serve := flag.Bool("s", false, "serve sausages")
-	flag.StringVar(&flagListenIface, "i", flagListenIface, "list on interface")
-	flag.IntVar(&flagListenPort, "p", flagListenPort, "list on TCP port")
-	flag.Parse()
-
-	flagListenAddr = fmt.Sprintf("%s:%d", flagListenIface, flagListenPort)
-
-	http.HandleFunc("/", serveSausages)
-
-	if *serve {
-		panicon(http.ListenAndServe(flagListenAddr, nil))
-	} else {
-		flag.PrintDefaults()
+	if len(os.Args) < 2 {
+		panicon(fmt.Errorf("more!"))
 	}
+
+	switch os.Args[1] {
+	case "serve":
+		serve()
+
+	case "sizzle":
+		proxyURL := "http://localhost:8080/"
+		if len(os.Args) > 2 {
+			proxyURL = os.Args[2]
+		}
+
+		sizzle(proxyURL)
+
+	default:
+		panicon(fmt.Errorf("Nope"))
+	}
+}
+
+func serve() {
+	flagListenAddr = fmt.Sprintf("%s:%d", flagListenIface, flagListenPort)
+	http.HandleFunc("/", serveSausages)
+	panicon(http.ListenAndServe(flagListenAddr, nil))
+}
+
+func sizzle(proxyURL string) {
+	fmt.Printf("Sizzling %s\n", proxyURL)
+
+	u, err := url.Parse(proxyURL)
+	panicon(err)
+
+	fields := []string{"", "", "bytes", "", "", "duration", "method", "url", "", "", "mime_type", "agent"}
+	l := NewSSVLexer(fields)
+	src := NewLogParser(os.Stdin, l)
+
+	client := NewClient(u, src)
+	client.Workers = 1000
+	client.Sizzle()
 }
 
 func panicon(err error) {
