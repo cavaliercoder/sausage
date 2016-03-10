@@ -9,7 +9,7 @@ import (
 // ClientRequest represent a single HTTP/S request to be submitted to a proxy
 // server. It includes details of the expected response.
 type ClientRequest struct {
-	LineNo       uint64
+	Sequence     uint64
 	Method       string
 	URL          string
 	Agent        string
@@ -26,10 +26,10 @@ func (c *ClientRequest) Err() error {
 
 func (c *ClientRequest) String() string {
 	if c.err != nil {
-		return fmt.Sprintf("line %d: %s", c.LineNo, c.err.Error())
+		return fmt.Sprintf("line %d: %s", c.Sequence, c.err.Error())
 	}
 
-	return fmt.Sprintf("line %d: %s %s", c.LineNo, c.Method, c.URL)
+	return fmt.Sprintf("line %d: %s %s", c.Sequence, c.Method, c.URL)
 }
 
 // HTTPRequest returns a http.Request with the ClientRequest encoded into
@@ -41,9 +41,6 @@ func (c *ClientRequest) HTTPRequest() (*http.Request, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	// keep alive on this worker
-	req.Header.Set("Connection", "keep-alive")
 
 	// set agent string
 	if c.Agent != "" {
@@ -70,7 +67,12 @@ func (c *ClientRequest) HTTPRequest() (*http.Request, error) {
 
 	// set duration
 	if c.Duration > 0 {
-		req.Header.Set("X-Sausage-Duration", fmt.Sprintf("%d", c.Duration))
+		req.Header.Set("X-Sausage-Duration", fmt.Sprintf("%d", c.Duration/time.Millisecond))
+	}
+
+	// set sequence id
+	if c.Sequence > 0 {
+		req.Header.Set("X-Sausage-Sequence", fmt.Sprintf("%d", c.Sequence))
 	}
 
 	return req, nil

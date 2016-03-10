@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"time"
 )
 
 // LogParser is a ClientRequestSource which reads a proxy access log file and
@@ -26,7 +27,7 @@ type LogParser struct {
 
 func NewLogParser(r io.Reader, l LogLexer) *LogParser {
 	buf := bufio.NewReader(r)
-	return &LogParser{r: buf, l: l}
+	return &LogParser{r: buf, l: l, BufferSize: 4096}
 }
 
 func (c *LogParser) Get() (<-chan *ClientRequest, error) {
@@ -55,7 +56,7 @@ func (c *LogParser) Get() (<-chan *ClientRequest, error) {
 
 			// create request
 			r := &ClientRequest{
-				LineNo: lineno,
+				Sequence: lineno,
 			}
 
 			// read in a full length line
@@ -118,12 +119,24 @@ func (c *LogParser) Get() (<-chan *ClientRequest, error) {
 			if b, ok := m["bytes"]; ok && b != "" {
 				bi, err := strconv.Atoi(b)
 				if err != nil {
-					r.err = fmt.Errorf("invalid byte count '%s' input line %d", b, lineno)
+					r.err = fmt.Errorf("invalid byte count '%s' in input line %d", b, lineno)
 					ch <- r
 					continue
 				}
 
 				r.Bytes = uint64(bi)
+			}
+
+			// extract duration
+			if d, ok := m["duration"]; ok && d != "" {
+				di, err := strconv.Atoi(d)
+				if err != nil {
+					r.err = fmt.Errorf("invalid duration %dms in input line %d", d, lineno)
+					ch <- r
+					continue
+				}
+
+				r.Duration = time.Millisecond * time.Duration(di)
 			}
 
 			// ship it

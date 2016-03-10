@@ -2,57 +2,61 @@ package main
 
 import (
 	"fmt"
-	"net/http"
-	"net/url"
+	"gopkg.in/alecthomas/kingpin.v2"
 	"os"
+	"time"
 )
 
 var (
 	flagListenPort  = 8080
 	flagListenIface = "0.0.0.0"
 	flagListenAddr  = ""
+
+	flagClientWorkers = 8192
+)
+
+var (
+	serve = kingpin.Command("serve", "serve sausages generously")
+
+	sizzle          = kingpin.Command("sizzle", "consume sausages greedily")
+	sizzleProxyURL  = sizzle.Arg("proxy", "proxy service URL").Default("http://localhost:8080/").URL()
+	sizzleWorkers   = sizzle.Flag("workers", "worker count").Default("8192").Int()
+	sizzleStaggerBy = sizzle.Flag("stagger", "stagger the start of each worker by ms").Default("10").Int()
 )
 
 func main() {
-	if len(os.Args) < 2 {
-		panicon(fmt.Errorf("more!"))
-	}
-
-	switch os.Args[1] {
+	switch kingpin.Parse() {
 	case "serve":
-		serve()
+		ActionServe()
 
 	case "sizzle":
-		proxyURL := "http://localhost:8080/"
-		if len(os.Args) > 2 {
-			proxyURL = os.Args[2]
-		}
-
-		sizzle(proxyURL)
+		ActionSizzle()
 
 	default:
 		panicon(fmt.Errorf("Nope"))
 	}
 }
 
-func serve() {
-	flagListenAddr = fmt.Sprintf("%s:%d", flagListenIface, flagListenPort)
-	http.HandleFunc("/", serveSausages)
-	panicon(http.ListenAndServe(flagListenAddr, nil))
+func usage(code int) {
+
+	os.Exit(code)
 }
 
-func sizzle(proxyURL string) {
-	fmt.Printf("Sizzling %s\n", proxyURL)
+func ActionServe() {
+	srv := NewSausageServer()
+	panicon(srv.ListenAndServe())
+}
 
-	u, err := url.Parse(proxyURL)
-	panicon(err)
+func ActionSizzle() {
+	fmt.Printf("Sizzling %v\n", *sizzleProxyURL)
 
 	fields := []string{"", "", "bytes", "", "", "duration", "method", "url", "", "", "mime_type", "agent"}
 	l := NewSSVLexer(fields)
 	src := NewLogParser(os.Stdin, l)
 
-	client := NewClient(u, src)
-	client.Workers = 1000
+	client := NewClient(*sizzleProxyURL, src)
+	client.Workers = *sizzleWorkers
+	client.StaggerBy = time.Millisecond * time.Duration(*sizzleStaggerBy)
 	client.Sizzle()
 }
 

@@ -1,18 +1,31 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"github.com/pivotal-golang/bytefmt"
 	"io/ioutil"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"time"
 )
 
+// error to return for redirect requests
+var errNoRedirect = errors.New("ignore redirects")
+
 // Client may be used to stress test a server.
 type Client struct {
+	// Workers specifies the number of threads and HTTP connections to use for
+	// stress testing.
 	Workers int
+
+	// StaggeryBy specifies how long to delay between starting each worker.
+	StaggerBy time.Duration
+
+	// KeepAlive specifies that the client should reuse TCP connections.
+	KeepAlive bool
 
 	proxyURL *url.URL
 	source   ClientRequestSource
@@ -22,8 +35,11 @@ type Client struct {
 // NewClient returns the default configuration of a stress test client run.
 func NewClient(proxyURL *url.URL, src ClientRequestSource) *Client {
 	return &Client{
-		proxyURL: proxyURL,
-		source:   src,
+		proxyURL:  proxyURL,
+		source:    src,
+		KeepAlive: true,
+		Workers:   8192,
+		StaggerBy: time.Millisecond,
 	}
 }
 
@@ -56,6 +72,9 @@ func (c *Client) Sizzle() error {
 	// configure http client
 	client := &http.Client{
 		Transport: tr,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return errNoRedirect
+		},
 	}
 
 	// parse proxy url
@@ -70,13 +89,17 @@ func (c *Client) Sizzle() error {
 	}
 
 	// start stats collector
-	resps := make(chan *ClientResponse, c.Workers*100)
+	resps := make(chan *ClientResponse, c.Workers*10)
 	go c.stat(resps)
 
 	// do requests
 	done := make(chan bool, 0)
 	for i := 0; i < c.Workers; i++ {
 		go c.do(client, reqs, resps, done)
+
+		if c.StaggerBy > 0 {
+			time.Sleep(c.StaggerBy)
+		}
 	}
 
 	// wait for workers to finish
@@ -113,7 +136,7 @@ func (c *Client) stat(resps <-chan *ClientResponse) {
 			bps := float64(data-dataPrev) * 8
 			dataPrev = data
 
-			fmt.Printf("Requests: %d (%.1f/sec) Transferred: %sb (%s) Errors: %d (%.1f/sec)\n", count, rps, bytefmt.ByteSize(data), bytefmt.BPSSize(bps), errs, eps)
+			fmt.Printf("Requests: %d (%.1f/sec) Transferred: %sb (%s) Errors: %d (%.1f/sec) Workers: %d\n", count, rps, bytefmt.ByteSize(data), bytefmt.BPSSize(bps), errs, eps, c.Workers)
 
 		case resp := <-resps: // new response received
 			if resp == nil {
@@ -124,7 +147,7 @@ func (c *Client) stat(resps <-chan *ClientResponse) {
 			count++
 			data += resp.Size()
 			if resp.Err() != nil {
-				//fmt.Printf("  %v\n", resp.Err())
+				fmt.Fprintf(os.Stderr, "  %v in sequence %d\n", resp.Err(), resp.req.Sequence)
 				errs++
 			}
 		}
@@ -136,7 +159,6 @@ func (c *Client) do(client *http.Client, reqs <-chan *ClientRequest, resps chan<
 	var hreq *http.Request
 	var hresp *http.Response
 	var start time.Time
-	var b []byte
 
 	for req := range reqs {
 		start = time.Now()
@@ -154,34 +176,35 @@ func (c *Client) do(client *http.Client, reqs <-chan *ClientRequest, resps chan<
 			hreq, err = req.HTTPRequest()
 			if err != nil {
 				resp.err = err
-			}
+			} else {
+				// configure keep-alives
+				if c.KeepAlive {
+					hreq.Header.Set("Connection", "keep-alive")
+				} else {
+					hreq.Header.Set("Connection", "close")
+				}
 
-			// send
-			if err == nil {
+				// send request
 				hresp, err = client.Do(hreq)
-				if err != nil {
+				if err == nil {
+					// read response body
+					defer hresp.Body.Close()
+
+					resp.resp = hresp
+					if b, err := ioutil.ReadAll(hresp.Body); err != nil {
+						resp.err = err
+					} else {
+						resp.size = uint64(len(b))
+						if req.Bytes > 0 && req.Method != "HEAD" && len(b) != int(req.Bytes) {
+							resp.err = fmt.Errorf("expected %d bytes; got: %d in sequence %d", req.Bytes, len(b), req.Sequence)
+						}
+					}
+				} else if uerr, ok := err.(*url.Error); ok && uerr.Err == errNoRedirect {
+					resp.resp = hresp
+				} else {
 					resp.err = err
 				}
 			}
-
-			// read body
-			if err == nil {
-				defer hresp.Body.Close()
-
-				resp.resp = hresp
-				b, err = ioutil.ReadAll(hresp.Body)
-				if err != nil {
-					resp.err = err
-				}
-			}
-
-			if err == nil {
-				resp.size = uint64(len(b))
-				if req.Bytes > 0 && uint64(len(b)) != req.Bytes {
-					resp.err = fmt.Errorf("expected %d bytes; got %d", req.Bytes, resp.size)
-				}
-			}
-
 		}
 
 		resp.duration = time.Now().Sub(start)
