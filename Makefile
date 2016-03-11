@@ -11,6 +11,7 @@ sausage-clean:
 
 get-deps:
 	go get -v github.com/pivotal-golang/bytefmt
+	go get -v gopkg.in/alecthomas/kingpin.v2
 
 test: sausage-test
 
